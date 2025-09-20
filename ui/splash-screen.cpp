@@ -54,7 +54,8 @@ struct SupportersData {
 static SupportersData supportersData;
 
 // Monthly supporters list (you'll want to update this regularly)
-static const char* MONTHLY_SUPPORTERS = R"(
+// Note: Currently using dynamic API loading instead of static list
+[[maybe_unused]] static const char* MONTHLY_SUPPORTERS = R"(
 <h3>💝 Thank You to Our Monthly Supporters!</h3>
 <p><i>Your support makes StreamUP possible and helps us continue developing amazing features!</i></p>
 
@@ -169,7 +170,7 @@ std::string ProcessInlineFormatting(const std::string& text)
 void LoadSupportersData() 
 {
     StreamUP::HttpClient::MakeAsyncGetRequest("https://streamup.tips/api/supporters", 
-        [](const std::string& url, const std::string& response, bool success) {
+        [](const std::string& /* url */, const std::string& response, bool success) {
             if (!success) {
                 supportersData.errorMessage = "Failed to fetch supporters data";
                 supportersData.loaded = true;
@@ -724,6 +725,8 @@ void UpdateVersionTracking()
 
 void CreateSplashDialog(ShowCondition condition)
 {
+    (void)condition; // Suppress unused parameter warning
+
     // Use DialogManager for singleton pattern, but condition logic still needed
     if (UIHelpers::DialogManager::IsSingletonDialogOpen("splash")) {
         return; // Dialog already handled by DialogManager
@@ -734,8 +737,8 @@ void CreateSplashDialog(ShowCondition condition)
         LoadSupportersData();
     }
 
-    UIHelpers::ShowSingletonDialogOnUIThread("splash", [condition]() -> QDialog* {
-        QDialog* dialog = StreamUP::UIStyles::CreateStyledDialog("StreamUP");
+    UIHelpers::ShowSingletonDialogOnUIThread("splash", []() -> QDialog* {
+        QDialog* dialog = StreamUP::UIStyles::CreateStyledDialog(obs_module_text("StreamUP.SplashScreen.Title"));
         dialog->setModal(false);
         dialog->setFixedSize(800, 600);
         
@@ -811,7 +814,7 @@ void CreateSplashDialog(ShowCondition condition)
         }
         textLogoLabel->setAlignment(Qt::AlignCenter);
         
-        QString versionText = QString("Advanced Toolkit for OBS Studio • Version %1").arg(PROJECT_VERSION);
+        QString versionText = QString(obs_module_text("StreamUP.SplashScreen.VersionText")).arg(PROJECT_VERSION);
         QLabel* versionLabel = StreamUP::UIStyles::CreateStyledDescription(versionText);
         versionLabel->setObjectName("versionLabel");
         
@@ -1072,13 +1075,13 @@ void CreateSplashDialog(ShowCondition condition)
         buttonLayout->setSpacing(StreamUP::UIStyles::Sizes::SPACING_MEDIUM);
         
         // Check for Plugin Update button
-        QPushButton* updateBtn = StreamUP::UIStyles::CreateStyledButton("Check for Plugin Update", "info");
-        QObject::connect(updateBtn, &QPushButton::clicked, [dialog]() {
+        QPushButton* updateBtn = StreamUP::UIStyles::CreateStyledButton(obs_module_text("StreamUP.SplashScreen.CheckForUpdate"), "info");
+        QObject::connect(updateBtn, &QPushButton::clicked, []() {
             StreamUP::PluginManager::ShowCachedPluginUpdatesDialog();
         });
         
         // Close button
-        QPushButton* closeBtn = StreamUP::UIStyles::CreateStyledButton("Close", "neutral");
+        QPushButton* closeBtn = StreamUP::UIStyles::CreateStyledButton(obs_module_text("Close"), "neutral");
         closeBtn->setDefault(true);
         QObject::connect(closeBtn, &QPushButton::clicked, [dialog]() {
             dialog->close();

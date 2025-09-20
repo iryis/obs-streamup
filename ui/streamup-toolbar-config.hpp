@@ -17,7 +17,9 @@ enum class ItemType {
     Button,
     Separator,
     CustomSpacer,
-    DockButton
+    DockButton,
+    Group,
+    HotkeyButton
 };
 
 // Base class for all toolbar items
@@ -88,6 +90,44 @@ public:
     void fromJson(const QJsonObject& json) override;
 };
 
+// Hotkey buttons that trigger OBS hotkeys
+class HotkeyButtonItem : public ToolbarItem {
+public:
+    QString hotkeyName;        // OBS hotkey internal name (e.g., "OBSBasic.StartStreaming")
+    QString displayName;       // User-friendly name for the hotkey
+    QString iconPath;          // Icon for the button (from available icons)
+    QString customIconPath;    // User-uploaded custom icon path
+    QString tooltip;           // Button tooltip
+    bool useCustomIcon = false; // Whether to use custom icon vs default/selected icon
+    
+    HotkeyButtonItem(const QString& itemId, const QString& hotkey, const QString& display) 
+        : ToolbarItem(ItemType::HotkeyButton, itemId), hotkeyName(hotkey), displayName(display) {}
+    
+    QJsonObject toJson() const override;
+    void fromJson(const QJsonObject& json) override;
+};
+
+// Group items for configuration UI organization (doesn't affect actual toolbar)
+class GroupItem : public ToolbarItem {
+public:
+    QString name;
+    QList<std::shared_ptr<ToolbarItem>> childItems;
+    bool expanded = true; // For UI display
+    
+    GroupItem(const QString& itemId, const QString& groupName) 
+        : ToolbarItem(ItemType::Group, itemId), name(groupName) {}
+    
+    QJsonObject toJson() const override;
+    void fromJson(const QJsonObject& json) override;
+    
+    // Utility methods for managing child items
+    void addChild(std::shared_ptr<ToolbarItem> child);
+    void removeChild(const QString& childId);
+    void moveChild(int fromIndex, int toIndex);
+    std::shared_ptr<ToolbarItem> findChild(const QString& childId) const;
+    int getChildIndex(const QString& childId) const;
+};
+
 // Main configuration class
 class ToolbarConfiguration {
 public:
@@ -110,6 +150,13 @@ public:
     void moveItem(int fromIndex, int toIndex);
     std::shared_ptr<ToolbarItem> findItem(const QString& id) const;
     int getItemIndex(const QString& id) const;
+    
+    // Group-specific utility methods
+    void addItemToGroup(const QString& groupId, std::shared_ptr<ToolbarItem> item);
+    void removeItemFromGroup(const QString& groupId, const QString& itemId);
+    void moveItemToGroup(const QString& itemId, const QString& targetGroupId);
+    void moveItemOutOfGroup(const QString& itemId);
+    QList<std::shared_ptr<ToolbarItem>> getFlattenedItems() const; // Get all items ignoring groups
     
     // Get available dock buttons
     static QList<DockButtonItem> getAvailableDockButtons();

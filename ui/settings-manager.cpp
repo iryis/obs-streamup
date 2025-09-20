@@ -1,4 +1,6 @@
 #include "settings-manager.hpp"
+#include "../utilities/debug-logger.hpp"
+#include "../utilities/path-utils.hpp"
 #include "ui-helpers.hpp"
 #include "ui-styles.hpp"
 #include "../utilities/obs-data-helpers.hpp"
@@ -8,6 +10,7 @@
 #include "hotkey-manager.hpp"
 #include "hotkey-widget.hpp"
 #include "dock/streamup-dock.hpp"
+#include "scene-organiser/scene-organiser-dock.hpp"
 #include "streamup-toolbar.hpp"
 #include "streamup-toolbar-configurator.hpp"
 #include <obs-module.h>
@@ -35,11 +38,12 @@
 #include <QComboBox>
 #include <QListWidget>
 #include <QStackedWidget>
+#include <QDesktopServices>
 #include <memory>
+#include <mutex>
 #include <util/platform.h>
 
-// Forward declarations for functions that may need to be moved from streamup.cpp
-extern char *GetFilePath();
+// UI settings management implementation
 
 // Register obs_data_array_t* as opaque pointer with Qt's metatype system
 Q_DECLARE_OPAQUE_POINTER(obs_data_array_t*)
@@ -50,9 +54,10 @@ namespace SettingsManager {
 // Global settings state
 static bool notificationsMuted = false;
 
-// Cache for settings to avoid repeated file loading
+// Enhanced cache for settings to avoid repeated file loading
 static obs_data_t* cachedSettings = nullptr;
 static bool settingsLoadLogged = false;
+static std::mutex settingsCacheMutex; // Thread safety for settings cache
 
 // Helper function to extract domain from URL
 QString ExtractDomain(const QString &url)
@@ -156,18 +161,20 @@ void AddIncompatiblePluginRow(QTableWidget *table, const std::string &moduleName
 
 obs_data_t *LoadSettings()
 {
+	std::lock_guard<std::mutex> lock(settingsCacheMutex);
+
 	// Return cached settings if available
 	if (cachedSettings) {
 		obs_data_addref(cachedSettings);
 		return cachedSettings;
 	}
 
-	char *configPath = obs_module_config_path("configs.json");
+	char *configPath = StreamUP::PathUtils::GetOBSConfigPath("configs.json");
 	obs_data_t *data = obs_data_create_from_json_file(configPath);
 
 	if (!data) {
-		blog(LOG_INFO, "[StreamUP] Settings not found. Creating default settings...");
-		char *config_path = obs_module_config_path("");
+		StreamUP::DebugLogger::LogDebug("Settings", "Initialize", "Settings not found. Creating default settings...");
+		char *config_path = StreamUP::PathUtils::GetOBSConfigPath("");
 		if (config_path) {
 			os_mkdirs(config_path);
 			bfree(config_path);
@@ -178,6 +185,7 @@ obs_data_t *LoadSettings()
 		obs_data_set_bool(data, "notifications_mute", false);
 		obs_data_set_bool(data, "show_cph_integration", true);
 		obs_data_set_bool(data, "show_toolbar", true);
+		obs_data_set_bool(data, "debug_logging_enabled", false);
 		obs_data_set_string(data, "toolbar_position", "top");
 
 		// Set default dock tool settings
@@ -192,7 +200,7 @@ obs_data_t *LoadSettings()
 
 		if (obs_data_save_json(data, configPath)) {
 		} else {
-			blog(LOG_WARNING, "[StreamUP] Failed to save default settings to file.");
+			StreamUP::DebugLogger::LogWarning("Settings", "Failed to save default settings to file");
 		}
 	} else {
 		// Only log success message once
@@ -211,19 +219,21 @@ obs_data_t *LoadSettings()
 
 bool SaveSettings(obs_data_t *settings)
 {
-	char *configPath = obs_module_config_path("configs.json");
+	std::lock_guard<std::mutex> lock(settingsCacheMutex);
+
+	char *configPath = StreamUP::PathUtils::GetOBSConfigPath("configs.json");
 	bool success = false;
 
 	if (obs_data_save_json(settings, configPath)) {
 		success = true;
-		
+
 		// Invalidate cache so next load picks up the updated settings
 		if (cachedSettings) {
 			obs_data_release(cachedSettings);
 			cachedSettings = nullptr;
 		}
 	} else {
-		blog(LOG_WARNING, "[StreamUP] Failed to save settings to file.");
+		StreamUP::DebugLogger::LogWarning("Settings", "Failed to save settings to file");
 	}
 
 	bfree(configPath);
@@ -240,6 +250,20 @@ PluginSettings GetCurrentSettings()
 		settings.notificationsMute = StreamUP::OBSDataHelpers::GetBoolWithDefault(data, "notifications_mute", false);
 		settings.showCPHIntegration = StreamUP::OBSDataHelpers::GetBoolWithDefault(data, "show_cph_integration", true);
 		settings.showToolbar = StreamUP::OBSDataHelpers::GetBoolWithDefault(data, "show_toolbar", true);
+		settings.debugLoggingEnabled = StreamUP::OBSDataHelpers::GetBoolWithDefault(data, "debug_logging_enabled", false);
+		settings.sceneOrganiserShowIcons = StreamUP::OBSDataHelpers::GetBoolWithDefault(data, "scene_organiser_show_icons", true);
+
+		// Load scene switch mode setting (default to single-click if not set)
+		const char *switchModeStr = StreamUP::OBSDataHelpers::GetStringWithDefault(data, "scene_organiser_switch_mode", "single_click");
+		if (switchModeStr && strlen(switchModeStr) > 0) {
+			if (strcmp(switchModeStr, "double_click") == 0) {
+				settings.sceneOrganiserSwitchMode = SceneSwitchMode::DoubleClick;
+			} else {
+				settings.sceneOrganiserSwitchMode = SceneSwitchMode::SingleClick;
+			}
+		} else {
+			settings.sceneOrganiserSwitchMode = SceneSwitchMode::SingleClick;
+		}
 
 		// Load toolbar position setting (default to top if not set)
 		const char *positionStr = StreamUP::OBSDataHelpers::GetStringWithDefault(data, "toolbar_position", "top");
@@ -283,6 +307,21 @@ void UpdateSettings(const PluginSettings &settings)
 	obs_data_set_bool(data, "notifications_mute", settings.notificationsMute);
 	obs_data_set_bool(data, "show_cph_integration", settings.showCPHIntegration);
 	obs_data_set_bool(data, "show_toolbar", settings.showToolbar);
+	obs_data_set_bool(data, "debug_logging_enabled", settings.debugLoggingEnabled);
+	obs_data_set_bool(data, "scene_organiser_show_icons", settings.sceneOrganiserShowIcons);
+
+	// Save scene switch mode setting
+	const char *switchModeStr;
+	switch (settings.sceneOrganiserSwitchMode) {
+	case SceneSwitchMode::DoubleClick:
+		switchModeStr = "double_click";
+		break;
+	case SceneSwitchMode::SingleClick:
+	default:
+		switchModeStr = "single_click";
+		break;
+	}
+	obs_data_set_string(data, "scene_organiser_switch_mode", switchModeStr);
 
 	// Save toolbar position setting
 	const char *positionStr;
@@ -328,14 +367,14 @@ void InitializeSettingsSystem()
 
 	if (settings) {
 		bool runAtStartup = obs_data_get_bool(settings, "run_at_startup");
-		blog(LOG_INFO, "[StreamUP] Run at startup setting: %s", runAtStartup ? "true" : "false");
+		StreamUP::DebugLogger::LogDebugFormat("Settings", "Startup", "Run at startup setting: %s", runAtStartup ? "true" : "false");
 
 		notificationsMuted = obs_data_get_bool(settings, "notifications_mute");
-		blog(LOG_INFO, "[StreamUP] Notifications mute setting: %s", notificationsMuted ? "true" : "false");
+		StreamUP::DebugLogger::LogDebugFormat("Settings", "Notifications", "Notifications mute setting: %s", notificationsMuted ? "true" : "false");
 
 		obs_data_release(settings);
 	} else {
-		blog(LOG_WARNING, "[StreamUP] Failed to load settings in initialization.");
+		StreamUP::DebugLogger::LogWarning("Settings", "Failed to load settings in initialization");
 	}
 }
 
@@ -431,6 +470,7 @@ void ShowSettingsDialog(int tabIndex)
 		QStringList categories = {
 			obs_module_text("Settings.Group.General"),
 			obs_module_text("Settings.Group.Toolbar"),
+			obs_module_text("SceneOrganiser.Settings.Title"),
 			obs_module_text("Settings.Group.PluginManagement"),
 			obs_module_text("Settings.Group.Hotkeys"),
 			obs_module_text("Settings.Group.DockConfig")
@@ -578,6 +618,35 @@ void ShowSettingsDialog(int tabIndex)
 		cphLayout->addWidget(cphIntegrationSwitch);
 		generalLayout->addLayout(cphLayout);
 
+		// Debug Logging setting
+		obs_property_t *debugLoggingProp =
+			obs_properties_add_bool(props, "debug_logging_enabled", obs_module_text("Settings.Debug.Logging"));
+
+		// Create horizontal layout for debug logging setting
+		QHBoxLayout *debugLoggingLayout = new QHBoxLayout();
+
+		QLabel *debugLoggingLabel = new QLabel(obs_module_text("Settings.Debug.Logging"));
+		debugLoggingLabel->setStyleSheet(QString("color: %1; font-size: %2px; background: transparent;")
+							  .arg(StreamUP::UIStyles::Colors::TEXT_PRIMARY)
+							  .arg(StreamUP::UIStyles::Sizes::FONT_SIZE_NORMAL));
+		debugLoggingLabel->setToolTip(obs_module_text("Settings.Debug.LoggingTooltip"));
+
+		StreamUP::UIStyles::SwitchButton *debugLoggingSwitch = StreamUP::UIStyles::CreateStyledSwitch(
+			"", obs_data_get_bool(settings, obs_property_name(debugLoggingProp)));
+		debugLoggingSwitch->setToolTip(obs_module_text("Settings.Debug.LoggingTooltip"));
+
+		QObject::connect(debugLoggingSwitch, &StreamUP::UIStyles::SwitchButton::toggled, [](bool checked) {
+			// Use modern settings system to avoid conflicts with dock settings
+			PluginSettings currentSettings = GetCurrentSettings();
+			currentSettings.debugLoggingEnabled = checked;
+			UpdateSettings(currentSettings);
+		});
+
+		debugLoggingLayout->addWidget(debugLoggingLabel);
+		debugLoggingLayout->addStretch();
+		debugLoggingLayout->addWidget(debugLoggingSwitch);
+		generalLayout->addLayout(debugLoggingLayout);
+
 		generalContentLayout->addWidget(generalSettingsWidget);
 		generalContentLayout->addStretch();
 		
@@ -625,12 +694,12 @@ void ShowSettingsDialog(int tabIndex)
 		toolbarLayout->setSpacing(StreamUP::UIStyles::Sizes::SPACING_MEDIUM);
 
 		// Show toolbar setting
-		obs_property_t *showToolbarProp = obs_properties_add_bool(props, "show_toolbar", "Show StreamUP Toolbar");
+		obs_property_t *showToolbarProp = obs_properties_add_bool(props, "show_toolbar", obs_module_text("StreamUP.Settings.ShowToolbar"));
 
 		// Create horizontal layout for show toolbar setting
 		QHBoxLayout *showToolbarLayout = new QHBoxLayout();
 
-		QLabel *showToolbarLabel = new QLabel("Show StreamUP Toolbar");
+		QLabel *showToolbarLabel = new QLabel(obs_module_text("StreamUP.Settings.ShowToolbar"));
 		showToolbarLabel->setStyleSheet(QString("color: %1; font-size: %2px; background: transparent;")
 							.arg(StreamUP::UIStyles::Colors::TEXT_PRIMARY)
 							.arg(StreamUP::UIStyles::Sizes::FONT_SIZE_NORMAL));
@@ -659,7 +728,7 @@ void ShowSettingsDialog(int tabIndex)
 		// Toolbar position setting with combobox
 		QHBoxLayout *toolbarPositionLayout = new QHBoxLayout();
 
-		QLabel *toolbarPositionLabel = new QLabel("Toolbar Position");
+		QLabel *toolbarPositionLabel = new QLabel(obs_module_text("StreamUP.Settings.ToolbarPosition"));
 		toolbarPositionLabel->setStyleSheet(QString("color: %1; font-size: %2px; background: transparent;")
 							    .arg(StreamUP::UIStyles::Colors::TEXT_PRIMARY)
 							    .arg(StreamUP::UIStyles::Sizes::FONT_SIZE_NORMAL));
@@ -710,13 +779,13 @@ void ShowSettingsDialog(int tabIndex)
 		// Add "Configure Toolbar" button
 		QHBoxLayout *configureToolbarLayout = new QHBoxLayout();
 		
-		QLabel *configureToolbarLabel = new QLabel("Toolbar Configuration");
+		QLabel *configureToolbarLabel = new QLabel(obs_module_text("StreamUP.Settings.ToolbarConfiguration"));
 		configureToolbarLabel->setStyleSheet(QString("color: %1; font-size: %2px; background: transparent;")
 							    .arg(StreamUP::UIStyles::Colors::TEXT_PRIMARY)
 							    .arg(StreamUP::UIStyles::Sizes::FONT_SIZE_NORMAL));
 		configureToolbarLabel->setToolTip("Customize toolbar buttons and layout");
 
-		QPushButton *configureToolbarButton = StreamUP::UIStyles::CreateStyledButton("Configure Toolbar", "neutral");
+		QPushButton *configureToolbarButton = StreamUP::UIStyles::CreateStyledButton(obs_module_text("StreamUP.Settings.ConfigureToolbar"), "neutral");
 		configureToolbarButton->setToolTip("Open toolbar configuration dialog");
 		
 		QObject::connect(configureToolbarButton, &QPushButton::clicked, [dialog]() {
@@ -746,7 +815,150 @@ void ShowSettingsDialog(int tabIndex)
 		toolbarPageLayout->addWidget(toolbarScrollArea);
 		stackedWidget->addWidget(toolbarPage);
 
-		// 3. Plugin Management Page
+		// 3. Scene Organiser Page
+		QWidget *sceneOrganiserPage = new QWidget();
+		QVBoxLayout *sceneOrganiserPageLayout = new QVBoxLayout(sceneOrganiserPage);
+		sceneOrganiserPageLayout->setContentsMargins(0, 0, 0, 0);
+		sceneOrganiserPageLayout->setSpacing(0);
+
+		// Create scrollable container with dialog box styling
+		QScrollArea *sceneOrganiserScrollArea = StreamUP::UIStyles::CreateStyledScrollArea();
+		sceneOrganiserScrollArea->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+		sceneOrganiserScrollArea->setStyleSheet(sceneOrganiserScrollArea->styleSheet() + QString(
+			"QScrollArea {"
+			"    background-color: %1;"
+			"    border: none;"
+			"    border-radius: %2px;"
+			"}"
+			"QScrollArea > QWidget > QWidget {"
+			"    background: transparent;"
+			"}"
+		).arg(StreamUP::UIStyles::Colors::BG_PRIMARY)
+		 .arg(StreamUP::UIStyles::Sizes::RADIUS_DOCK));
+
+		// Create content container with dialog box background
+		QWidget *sceneOrganiserContentContainer = new QWidget();
+		sceneOrganiserContentContainer->setStyleSheet(QString(
+			"QWidget {"
+			"    background: transparent;"
+			"}"
+		));
+
+		QVBoxLayout *sceneOrganiserContentLayout = new QVBoxLayout(sceneOrganiserContentContainer);
+		sceneOrganiserContentLayout->setContentsMargins(StreamUP::UIStyles::Sizes::PADDING_XL, StreamUP::UIStyles::Sizes::PADDING_XL,
+							 StreamUP::UIStyles::Sizes::PADDING_XL, StreamUP::UIStyles::Sizes::PADDING_XL);
+		sceneOrganiserContentLayout->setSpacing(StreamUP::UIStyles::Sizes::SPACING_LARGE);
+
+		QWidget *sceneOrganiserSettingsWidget = new QWidget();
+		QVBoxLayout *sceneOrganiserLayout = new QVBoxLayout(sceneOrganiserSettingsWidget);
+		sceneOrganiserLayout->setSpacing(StreamUP::UIStyles::Sizes::SPACING_MEDIUM);
+
+		// Description header
+		QLabel *sceneOrganiserDescription = new QLabel(obs_module_text("SceneOrganiser.Settings.Description"));
+		sceneOrganiserDescription->setStyleSheet(QString("color: %1; font-size: %2px; margin-bottom: 16px; background: transparent;")
+							.arg(StreamUP::UIStyles::Colors::TEXT_SECONDARY)
+							.arg(StreamUP::UIStyles::Sizes::FONT_SIZE_NORMAL));
+		sceneOrganiserDescription->setWordWrap(true);
+		sceneOrganiserLayout->addWidget(sceneOrganiserDescription);
+
+
+		// Show Icons setting
+		sceneOrganiserLayout->addSpacing(16);
+		QHBoxLayout *showIconsLayout = new QHBoxLayout();
+
+		QLabel *showIconsLabel = new QLabel(obs_module_text("SceneOrganiser.Settings.ShowIcons"));
+		showIconsLabel->setStyleSheet(QString("color: %1; font-size: %2px; background: transparent;")
+						.arg(StreamUP::UIStyles::Colors::TEXT_PRIMARY)
+						.arg(StreamUP::UIStyles::Sizes::FONT_SIZE_NORMAL));
+		showIconsLabel->setToolTip(obs_module_text("SceneOrganiser.Settings.ShowIconsDesc"));
+
+		StreamUP::UIStyles::SwitchButton *showIconsSwitch =
+			StreamUP::UIStyles::CreateStyledSwitch("", currentSettings.sceneOrganiserShowIcons);
+		showIconsSwitch->setToolTip(obs_module_text("SceneOrganiser.Settings.ShowIconsDesc"));
+
+		QObject::connect(showIconsSwitch, &StreamUP::UIStyles::SwitchButton::toggled, [](bool checked) {
+			PluginSettings settings = GetCurrentSettings();
+			settings.sceneOrganiserShowIcons = checked;
+			UpdateSettings(settings);
+
+			// Notify all scene organiser docks to update their icon visibility
+			StreamUP::SceneOrganiser::SceneOrganiserDock::NotifySceneOrganiserIconsChanged();
+		});
+
+		showIconsLayout->addWidget(showIconsLabel);
+		showIconsLayout->addStretch();
+		showIconsLayout->addWidget(showIconsSwitch);
+		sceneOrganiserLayout->addLayout(showIconsLayout);
+
+		// Scene switching mode setting
+		QHBoxLayout *switchModeLayout = new QHBoxLayout();
+		switchModeLayout->setContentsMargins(0, 0, 0, 0);
+
+		QLabel *switchModeLabel = new QLabel(obs_module_text("SceneOrganiser.Settings.SwitchMode"));
+		switchModeLabel->setStyleSheet(QString("color: %1; font-size: %2px; background: transparent;")
+							.arg(StreamUP::UIStyles::Colors::TEXT_PRIMARY)
+							.arg(StreamUP::UIStyles::Sizes::FONT_SIZE_NORMAL));
+		switchModeLabel->setWordWrap(true);
+
+		// Create combobox for switch mode selection
+		QComboBox *switchModeComboBox = new QComboBox();
+		switchModeComboBox->addItem(obs_module_text("SceneOrganiser.Settings.SwitchMode.SingleClick"), static_cast<int>(SceneSwitchMode::SingleClick));
+		switchModeComboBox->addItem(obs_module_text("SceneOrganiser.Settings.SwitchMode.DoubleClick"), static_cast<int>(SceneSwitchMode::DoubleClick));
+
+		// Set current selection
+		int currentSwitchModeIndex = static_cast<int>(currentSettings.sceneOrganiserSwitchMode);
+		switchModeComboBox->setCurrentIndex(switchModeComboBox->findData(currentSwitchModeIndex));
+
+		// Connect change handler
+		QObject::connect(switchModeComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
+				 [switchModeComboBox](int index) {
+					 if (index >= 0) {
+						 QVariant data = switchModeComboBox->itemData(index);
+						 if (data.isValid()) {
+							 PluginSettings currentSettings = GetCurrentSettings();
+							 currentSettings.sceneOrganiserSwitchMode = static_cast<SceneSwitchMode>(data.toInt());
+							 UpdateSettings(currentSettings);
+						 }
+					 }
+				 });
+
+		switchModeLayout->addWidget(switchModeLabel);
+		switchModeLayout->addStretch();
+		switchModeLayout->addWidget(switchModeComboBox);
+		sceneOrganiserLayout->addLayout(switchModeLayout);
+
+		// Credit section
+		sceneOrganiserLayout->addSpacing(20);
+
+		QGroupBox *creditGroup = StreamUP::UIStyles::CreateStyledGroupBox(obs_module_text("SceneOrganiser.Settings.Credit"), "info");
+		QVBoxLayout *creditLayout = new QVBoxLayout(creditGroup);
+		creditLayout->setSpacing(StreamUP::UIStyles::Sizes::SPACING_MEDIUM);
+
+		QLabel *creditText = new QLabel(obs_module_text("SceneOrganiser.Settings.CreditText"));
+		creditText->setStyleSheet(QString("color: %1; font-size: %2px; background: transparent;")
+						.arg(StreamUP::UIStyles::Colors::TEXT_PRIMARY)
+						.arg(StreamUP::UIStyles::Sizes::FONT_SIZE_NORMAL));
+		creditText->setWordWrap(true);
+		creditLayout->addWidget(creditText);
+
+		QPushButton *creditButton = StreamUP::UIStyles::CreateStyledButton(obs_module_text("SceneOrganiser.Settings.CreditLink"), "neutral");
+		creditButton->setToolTip("https://github.com/DigitOtter/obs_scene_tree_view");
+
+		QObject::connect(creditButton, &QPushButton::clicked, []() {
+			QDesktopServices::openUrl(QUrl("https://github.com/DigitOtter/obs_scene_tree_view"));
+		});
+
+		creditLayout->addWidget(creditButton);
+		sceneOrganiserLayout->addWidget(creditGroup);
+
+		sceneOrganiserContentLayout->addWidget(sceneOrganiserSettingsWidget);
+		sceneOrganiserContentLayout->addStretch();
+
+		sceneOrganiserScrollArea->setWidget(sceneOrganiserContentContainer);
+		sceneOrganiserPageLayout->addWidget(sceneOrganiserScrollArea);
+		stackedWidget->addWidget(sceneOrganiserPage);
+
+		// 4. Plugin Management Page
 		QWidget *pluginPage = new QWidget();
 		QVBoxLayout *pluginPageLayout = new QVBoxLayout(pluginPage);
 		pluginPageLayout->setContentsMargins(0, 0, 0, 0);
@@ -806,7 +1018,7 @@ void ShowSettingsDialog(int tabIndex)
 		pluginPageLayout->addWidget(pluginScrollArea);
 		stackedWidget->addWidget(pluginPage);
 
-		// 4. Hotkeys Page - embed the full hotkeys UI directly
+		// 5. Hotkeys Page - embed the full hotkeys UI directly
 		QWidget *hotkeysPage = new QWidget();
 		QVBoxLayout *hotkeysPageLayout = new QVBoxLayout(hotkeysPage);
 		hotkeysPageLayout->setContentsMargins(0, 0, 0, 0);
@@ -997,7 +1209,7 @@ void ShowSettingsDialog(int tabIndex)
 		hotkeysPageLayout->addWidget(hotkeysScrollArea);
 		stackedWidget->addWidget(hotkeysPage);
 
-		// 5. Dock Configuration Page - embed the full dock config UI directly
+		// 6. Dock Configuration Page - embed the full dock config UI directly
 		QWidget *dockPage = new QWidget();
 		QVBoxLayout *dockPageLayout = new QVBoxLayout(dockPage);
 		dockPageLayout->setContentsMargins(0, 0, 0, 0);
@@ -1228,6 +1440,7 @@ void ShowInstalledPluginsInline(const StreamUP::UIStyles::StandardDialogComponen
 {
 	// Store the current widget temporarily
 	QWidget *currentWidget = components.scrollArea->takeWidget();
+	(void)currentWidget; // Suppress unused variable warning
 
 	// Keep the main header unchanged - only replace content below it
 
@@ -1290,7 +1503,7 @@ void ShowInstalledPluginsInline(const StreamUP::UIStyles::StandardDialogComponen
 	}
 
 	// Add incompatible plugins
-	char *filePath = GetFilePath();
+	char *filePath = StreamUP::PathUtils::GetOBSLogPath();
 	std::vector<std::string> incompatibleModules = StreamUP::PluginManager::SearchLoadedModulesInLogFile(filePath);
 	bfree(filePath);
 
@@ -1446,7 +1659,7 @@ void ShowInstalledPluginsPage(QWidget *parentWidget)
 		}
 
 		// Add incompatible plugins
-		char *filePath = GetFilePath();
+		char *filePath = StreamUP::PathUtils::GetOBSLogPath();
 		std::vector<std::string> incompatibleModules = StreamUP::PluginManager::SearchLoadedModulesInLogFile(filePath);
 		bfree(filePath);
 
@@ -1498,7 +1711,7 @@ void ShowInstalledPluginsPage(QWidget *parentWidget)
 		buttonLayout->setContentsMargins(StreamUP::UIStyles::Sizes::PADDING_MEDIUM, 0,
 						 StreamUP::UIStyles::Sizes::PADDING_MEDIUM, 0);
 
-		QPushButton *updateButton = StreamUP::UIStyles::CreateStyledButton("Check for Plugin Update", "info");
+		QPushButton *updateButton = StreamUP::UIStyles::CreateStyledButton(obs_module_text("StreamUP.Settings.CheckForUpdate"), "info");
 		QObject::connect(updateButton, &QPushButton::clicked, [dialog]() {
 			StreamUP::PluginManager::ShowCachedPluginUpdatesDialog();
 			dialog->close();
@@ -1521,6 +1734,7 @@ void ShowHotkeysInline(const StreamUP::UIStyles::StandardDialogComponents &compo
 {
 	// Store the current widget temporarily
 	QWidget *currentWidget = components.scrollArea->takeWidget();
+	(void)currentWidget; // Suppress unused variable warning
 
 	// Keep the main header unchanged - only replace content below it
 
@@ -1841,6 +2055,7 @@ void ShowDockConfigInline(const StreamUP::UIStyles::StandardDialogComponents &co
 {
 	// Store the current widget temporarily
 	QWidget *currentWidget = components.scrollArea->takeWidget();
+	(void)currentWidget; // Suppress unused variable warning
 
 	// Keep the main header unchanged - only replace content below it
 
@@ -2163,8 +2378,31 @@ void ShowDockConfigInline(const StreamUP::UIStyles::StandardDialogComponents &co
 	// Don't resize dialog when switching to sub-menus to maintain consistent header appearance
 }
 
+bool IsDebugLoggingEnabled()
+{
+	PluginSettings settings = GetCurrentSettings();
+	return settings.debugLoggingEnabled;
+}
+
+void SetDebugLoggingEnabled(bool enabled)
+{
+	PluginSettings settings = GetCurrentSettings();
+	settings.debugLoggingEnabled = enabled;
+	UpdateSettings(settings);
+}
+
+void InvalidateSettingsCache()
+{
+	std::lock_guard<std::mutex> lock(settingsCacheMutex);
+	if (cachedSettings) {
+		obs_data_release(cachedSettings);
+		cachedSettings = nullptr;
+	}
+}
+
 void CleanupSettingsCache()
 {
+	std::lock_guard<std::mutex> lock(settingsCacheMutex);
 	// Release cached settings on plugin shutdown
 	if (cachedSettings) {
 		obs_data_release(cachedSettings);

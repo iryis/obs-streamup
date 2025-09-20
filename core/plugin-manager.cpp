@@ -1,4 +1,5 @@
 #include "plugin-manager.hpp"
+#include "../utilities/debug-logger.hpp"
 #include "streamup-common.hpp"
 #include "plugin-state.hpp"
 #include "string-utils.hpp"
@@ -50,7 +51,6 @@
 #endif
 
 // UI functions now accessed through StreamUP::UIHelpers namespace
-extern char *GetFilePath();
 
 namespace StreamUP {
 namespace PluginManager {
@@ -630,8 +630,8 @@ bool CheckrequiredOBSPluginsWithoutUI(bool isLoadStreamUpFile)
 
 	std::map<std::string, std::string> missing_modules;
 	std::map<std::string, std::string> version_mismatch_modules;
-	char *filepath = GetFilePath();
-	if (filepath == NULL) {
+	char *filepath = StreamUP::PathUtils::GetOBSLogPath();
+	if (filepath == nullptr) {
 		return false;
 	}
 
@@ -680,8 +680,8 @@ bool CheckrequiredOBSPlugins(bool isLoadStreamUpFile)
 	std::map<std::string, std::string> version_mismatch_modules;
 	std::string errorMsgMissing = "";
 	std::string errorMsgUpdate = "";
-	char *filepath = GetFilePath();
-	if (filepath == NULL) {
+	char *filepath = StreamUP::PathUtils::GetOBSLogPath();
+	if (filepath == nullptr) {
 		return false;
 	}
 
@@ -765,14 +765,32 @@ std::string SearchStringInFileForVersion(const char *path, const char *search)
 			std::string remaining_line(found_ptr + search_len);
 			std::smatch match;
 
+			// First try to find semantic version (x.y.z format)
 			if (std::regex_search(remaining_line, match, version_regex_triple)) {
-				fclose(file);
-				return match.str(0);
+				std::string version = match.str(0);
+				// Check if this looks like a git hash (contains only hex chars and is long)
+				bool is_git_hash = version.length() >= 7 && std::all_of(version.begin(), version.end(), 
+					[](char c) { return std::isxdigit(c) || c == '.'; }) && 
+					std::count(version.begin(), version.end(), '.') >= 2;
+				
+				if (!is_git_hash) {
+					fclose(file);
+					return version;
+				}
 			}
 
+			// If triple version was a git hash or not found, try double version
 			if (std::regex_search(remaining_line, match, version_regex_double)) {
-				fclose(file);
-				return match.str(0);
+				std::string version = match.str(0);
+				// Check if this looks like a git hash (contains only hex chars and is long)
+				bool is_git_hash = version.length() >= 7 && std::all_of(version.begin(), version.end(), 
+					[](char c) { return std::isxdigit(c) || c == '.'; }) && 
+					std::count(version.begin(), version.end(), '.') >= 1;
+				
+				if (!is_git_hash) {
+					fclose(file);
+					return version;
+				}
 			}
 		}
 	}
@@ -880,8 +898,8 @@ std::string SearchThemeFileForVersion(const char *search)
 std::vector<std::pair<std::string, std::string>> GetInstalledPlugins()
 {
 	std::vector<std::pair<std::string, std::string>> installedPlugins;
-	char *filepath = GetFilePath();
-	if (filepath == NULL) {
+	char *filepath = StreamUP::PathUtils::GetOBSLogPath();
+	if (filepath == nullptr) {
 		return installedPlugins;
 	}
 
@@ -929,10 +947,30 @@ std::vector<std::pair<std::string, std::string>> GetInstalledPlugins()
 				std::string remaining = file_content.substr(found_pos + search_string.length());
 				std::smatch match;
 				
+				// First try to find semantic version (x.y.z format)
 				if (std::regex_search(remaining, match, version_regex_triple)) {
-					installed_version = match.str(0);
-				} else if (std::regex_search(remaining, match, version_regex_double)) {
-					installed_version = match.str(0);
+					std::string version = match.str(0);
+					// Check if this looks like a git hash (contains only hex chars and is long)
+					bool is_git_hash = version.length() >= 7 && std::all_of(version.begin(), version.end(), 
+						[](char c) { return std::isxdigit(c) || c == '.'; }) && 
+						std::count(version.begin(), version.end(), '.') >= 2;
+					
+					if (!is_git_hash) {
+						installed_version = version;
+					}
+				}
+				
+				// If triple version was a git hash or not found, try double version
+				if (installed_version.empty() && std::regex_search(remaining, match, version_regex_double)) {
+					std::string version = match.str(0);
+					// Check if this looks like a git hash (contains only hex chars and is long)
+					bool is_git_hash = version.length() >= 7 && std::all_of(version.begin(), version.end(), 
+						[](char c) { return std::isxdigit(c) || c == '.'; }) && 
+						std::count(version.begin(), version.end(), '.') >= 1;
+					
+					if (!is_git_hash) {
+						installed_version = version;
+					}
 				}
 			}
 		}
@@ -957,8 +995,8 @@ void PerformPluginCheckAndCache(bool checkAllPlugins)
 
 	std::map<std::string, std::string> missing_modules;
 	std::map<std::string, std::string> version_mismatch_modules;
-	char *filepath = GetFilePath();
-	if (filepath == NULL) {
+	char *filepath = StreamUP::PathUtils::GetOBSLogPath();
+	if (filepath == nullptr) {
 		return;
 	}
 
@@ -1011,10 +1049,30 @@ void PerformPluginCheckAndCache(bool checkAllPlugins)
 				std::string remaining = file_content.substr(found_pos + search_string.length());
 				std::smatch match;
 				
+				// First try to find semantic version (x.y.z format)
 				if (std::regex_search(remaining, match, version_regex_triple)) {
-					installed_version = match.str(0);
-				} else if (std::regex_search(remaining, match, version_regex_double)) {
-					installed_version = match.str(0);
+					std::string version = match.str(0);
+					// Check if this looks like a git hash (contains only hex chars and is long)
+					bool is_git_hash = version.length() >= 7 && std::all_of(version.begin(), version.end(), 
+						[](char c) { return std::isxdigit(c) || c == '.'; }) && 
+						std::count(version.begin(), version.end(), '.') >= 2;
+					
+					if (!is_git_hash) {
+						installed_version = version;
+					}
+				}
+				
+				// If triple version was a git hash or not found, try double version
+				if (installed_version.empty() && std::regex_search(remaining, match, version_regex_double)) {
+					std::string version = match.str(0);
+					// Check if this looks like a git hash (contains only hex chars and is long)
+					bool is_git_hash = version.length() >= 7 && std::all_of(version.begin(), version.end(), 
+						[](char c) { return std::isxdigit(c) || c == '.'; }) && 
+						std::count(version.begin(), version.end(), '.') >= 1;
+					
+					if (!is_git_hash) {
+						installed_version = version;
+					}
 				}
 			}
 		}
@@ -1259,7 +1317,7 @@ std::vector<std::string> SearchLoadedModulesInLogFile(const char *logPath)
 		}
 		fclose(file);
 	} else {
-		blog(LOG_ERROR, "[StreamUP] Failed to open log file: %s", filepath.c_str());
+		StreamUP::DebugLogger::LogErrorFormat("PluginManager", "Failed to open log file: %s", filepath.c_str());
 	}
 
 	std::sort(collected_modules.begin(), collected_modules.end(), [](const std::string &a, const std::string &b) {

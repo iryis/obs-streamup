@@ -1,49 +1,53 @@
+// Core plugin headers
 #include "obs-websocket-api.h"
 #include "streamup.hpp"
+#include "version.h"
+
+// Core functionality modules
+#include "core/streamup-common.hpp"
+#include "core/plugin-state.hpp"
+#include "core/plugin-manager.hpp"
+#include "integrations/websocket-api.hpp"
+#include "utilities/path-utils.hpp"
+#include "utilities/debug-logger.hpp"
+
+// UI modules
 #include "ui/dock/streamup-dock.hpp"
+#include "ui/scene-organiser/scene-organiser-dock.hpp"
 #include "ui/streamup-toolbar.hpp"
 #include "ui/settings-manager.hpp"
-#include "version.h"
-#include "streamup-common.hpp"
-#include "plugin-state.hpp"
-#include "source-manager.hpp"
-#include "file-manager.hpp"
-#include "plugin-manager.hpp"
-#include "websocket-api.hpp"
-#include "hotkey-manager.hpp"
-#include "ui-helpers.hpp"
+#include "ui/ui-helpers.hpp"
 #include "ui/ui-styles.hpp"
-#include "menu-manager.hpp"
-#include "notification-manager.hpp"
-#include "http-client.hpp"
-#include "utilities/path-utils.hpp"
-#include "string-utils.hpp"
-#include "version-utils.hpp"
+#include "ui/menu-manager.hpp"
+#include "ui/notification-manager.hpp"
+#include "ui/hotkey-manager.hpp"
 #include "ui/splash-screen.hpp"
 #include "ui/patch-notes-window.hpp"
 #include "multidock/multidock_manager.hpp"
+
+// Standard library
 #include <filesystem>
-#include <fstream>
+#include <string>
+#include <regex>
+#include <thread>
+
+// OBS headers
 #include <obs.h>
 #include <obs-data.h>
 #include <obs-frontend-api.h>
 #include <obs-module.h>
-#include <QDesktopServices>
-#include <QDialog>
+#include <util/platform.h>
+
+// Qt headers - only what's needed for this file
 #include <QDockWidget>
-#include <QGroupBox>
-#include <QLabel>
 #include <QMainWindow>
-#include <QObject>
-#include <QPushButton>
-#include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
-#include <QUrl>
-#include <regex>
-#include <thread>
-#include <unordered_set>
-#include <util/platform.h>
+#include <QLabel>
+#include <QGroupBox>
+#include <QPushButton>
+#include <QStyle>
+#include <QObject>
 
 
 
@@ -58,73 +62,7 @@ OBS_MODULE_USE_DEFAULT_LOCALE("streamup", "en-US")
 
 
 //--------------------PATH HELPERS--------------------
-
-char *GetFilePath()
-{
-	char *path = nullptr;
-	char *path_abs = nullptr;
-
-	if (strcmp(STREAMUP_PLATFORM_NAME, "windows") == 0) {
-		path = obs_module_config_path("../../logs/");
-		path_abs = os_get_abs_path_ptr(path);
-
-		if (path_abs[strlen(path_abs) - 1] != '/' && path_abs[strlen(path_abs) - 1] != '\\') {
-			// Create a new string with appended "/"
-			size_t new_path_abs_size = strlen(path_abs) + 2;
-			char *newPathAbs = (char *)bmalloc(new_path_abs_size);
-			strcpy(newPathAbs, path_abs);
-			strcat(newPathAbs, "/");
-
-			// Free the old path_abs and reassign it
-			bfree(path_abs);
-			path_abs = newPathAbs;
-		}
-	} else {
-		path = obs_module_config_path("");
-
-		std::string path_str(path);
-		std::string to_search = "/plugin_config/streamup/";
-		std::string replace_str = "/logs/";
-
-		size_t pos = path_str.find(to_search);
-
-		// If found then replace it
-		if (pos != std::string::npos) {
-			path_str.replace(pos, to_search.size(), replace_str);
-		}
-
-		size_t path_abs_size = path_str.size() + 1;
-		path_abs = (char *)bmalloc(path_abs_size);
-		std::strcpy(path_abs, path_str.c_str());
-	}
-	bfree(path);
-
-	blog(LOG_INFO, "[StreamUP] Path: %s", path_abs);
-
-	// Use std::filesystem to check if the path exists
-	std::string path_abs_str(path_abs);
-	blog(LOG_INFO, "[StreamUP] Path: %s", path_abs_str.c_str());
-
-	bool path_exists = std::filesystem::exists(path_abs_str);
-	if (path_exists) {
-		std::filesystem::directory_iterator dir(path_abs_str);
-		if (dir == std::filesystem::directory_iterator{}) {
-			// The directory is empty
-			blog(LOG_INFO, "[StreamUP] OBS doesn't have files in the install directory.");
-			bfree(path_abs);
-			return NULL;
-		} else {
-			// The directory contains files
-			return path_abs;
-		}
-	} else {
-		// The directory does not exist
-		blog(LOG_INFO, "[StreamUP] OBS log file folder does not exist in the install directory.");
-		bfree(path_abs);
-		return NULL;
-	}
-}
-
+// GetFilePath functionality moved to StreamUP::PathUtils::GetOBSLogPath()
 // GetMostRecentFile moved to StreamUP::PathUtils::GetMostRecentTxtFile
 
 
@@ -229,7 +167,7 @@ std::string SearchStringInFile(const char *path, const char *search)
 		}
 		fclose(file);
 	} else {
-		blog(LOG_ERROR, "[StreamUP] Failed to open file: %s", filepath.c_str());
+		StreamUP::DebugLogger::LogErrorFormat("FileAccess", "Failed to open file: %s", filepath.c_str());
 	}
 
 	return "";
@@ -238,8 +176,8 @@ std::string SearchStringInFile(const char *path, const char *search)
 std::vector<std::pair<std::string, std::string>> GetInstalledPlugins()
 {
 	std::vector<std::pair<std::string, std::string>> installedPlugins;
-	char *filepath = GetFilePath();
-	if (filepath == NULL) {
+	char *filepath = StreamUP::PathUtils::GetOBSLogPath();
+	if (filepath == nullptr) {
 		return installedPlugins;
 	}
 
@@ -308,7 +246,7 @@ void GetShowHideTransition(obs_data_t *request_data, obs_data_t *response_data, 
 	// Fetch transition settings
 	obs_data_t *settings = obs_source_get_settings(transition);
 	if (!settings) {
-		blog(LOG_WARNING, "[StreamUP] Failed to get settings for transition: %s", obs_source_get_name(transition));
+		StreamUP::DebugLogger::LogWarningFormat("Transitions", "Failed to get settings for transition: %s", obs_source_get_name(transition));
 		obs_data_set_string(response_data, "error", "Failed to get transition settings.");
 		obs_data_set_bool(response_data, "success", false);
 		obs_source_release(scene_source);
@@ -350,7 +288,7 @@ const char *GetTransitionIDFromDisplayName(const char *display_name)
 
 		// Check if the display name is valid before calling strcmp
 		if (transition_display_name == NULL) {
-			blog(LOG_WARNING, "[StreamUP] Failed to get display name for transition ID: %s", transition_id);
+			StreamUP::DebugLogger::LogWarningFormat("Transitions", "Failed to get display name for transition ID: %s", transition_id);
 			continue; // Skip to the next transition type
 		}
 
@@ -556,6 +494,69 @@ static void LoadStreamUPDock()
 	obs_frontend_pop_ui_translation();
 }
 
+// Global Scene Organiser dock instances
+static StreamUP::SceneOrganiser::SceneOrganiserDock* globalSceneOrganiserNormal = nullptr;
+static StreamUP::SceneOrganiser::SceneOrganiserDock* globalSceneOrganiserVertical = nullptr;
+
+static void LoadSceneOrganiserDocks()
+{
+	const auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	obs_frontend_push_ui_translation(obs_module_get_string);
+
+	// Always create Normal Canvas Scene Organiser
+	globalSceneOrganiserNormal = new StreamUP::SceneOrganiser::SceneOrganiserDock(
+		StreamUP::SceneOrganiser::CanvasType::Normal, main_window);
+
+	const QString normalTitle = QString::fromUtf8(obs_module_text("SceneOrganiser.Label.NormalCanvas"));
+	const auto normalName = "StreamUPSceneOrganiserNormal";
+
+#if LIBOBS_API_VER >= MAKE_SEMANTIC_VERSION(30, 0, 0)
+	obs_frontend_add_dock_by_id(normalName, normalTitle.toUtf8().constData(), globalSceneOrganiserNormal);
+#else
+	auto normalDock = new QDockWidget(main_window);
+	normalDock->setObjectName(normalName);
+	normalDock->setWindowTitle(normalTitle);
+	normalDock->setWidget(globalSceneOrganiserNormal);
+	normalDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+	normalDock->setFloating(true);
+	normalDock->hide();
+	obs_frontend_add_dock(normalDock);
+#endif
+
+	// Create Vertical Canvas Scene Organiser only if Aitum Vertical plugin is detected
+	if (StreamUP::SceneOrganiser::SceneOrganiserDock::IsVerticalPluginDetected()) {
+
+		globalSceneOrganiserVertical = new StreamUP::SceneOrganiser::SceneOrganiserDock(
+			StreamUP::SceneOrganiser::CanvasType::Vertical, main_window);
+
+		const QString verticalTitle = QString::fromUtf8(obs_module_text("SceneOrganiser.Label.VerticalCanvas"));
+		const auto verticalName = "StreamUPSceneOrganiserVertical";
+
+#if LIBOBS_API_VER >= MAKE_SEMANTIC_VERSION(30, 0, 0)
+		obs_frontend_add_dock_by_id(verticalName, verticalTitle.toUtf8().constData(), globalSceneOrganiserVertical);
+#else
+		auto verticalDock = new QDockWidget(main_window);
+		verticalDock->setObjectName(verticalName);
+		verticalDock->setWindowTitle(verticalTitle);
+		verticalDock->setWidget(globalSceneOrganiserVertical);
+		verticalDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+		verticalDock->setFloating(true);
+		verticalDock->hide();
+		obs_frontend_add_dock(verticalDock);
+#endif
+	}
+
+	obs_frontend_pop_ui_translation();
+}
+
+// Function to apply scene organiser visibility changes
+void ApplySceneOrganiserVisibility()
+{
+	// This function is maintained for compatibility but no longer needed
+	// since Scene Organisers are now always enabled
+	StreamUP::DebugLogger::LogDebug("SceneOrganiser", "Visibility", "ApplySceneOrganiserVisibility called - Scene Organisers are now always enabled");
+}
+
 static StreamUPToolbar* globalToolbar = nullptr;
 
 // Forward declarations
@@ -638,7 +639,7 @@ void ApplyToolbarPosition()
 			globalToolbar->updatePositionAwareTheme();
 			
 			// Force a comprehensive style refresh to ensure position-aware styles are applied immediately
-			blog(LOG_DEBUG, "[StreamUP] Forcing style refresh after toolbar position change");
+			StreamUP::DebugLogger::LogDebug("Toolbar", "Position Change", "Forcing style refresh after toolbar position change");
 			
 			// Refresh the main window and all its children to pick up the new position-aware styling
 			main_window->style()->unpolish(main_window);
@@ -665,21 +666,33 @@ void ApplyToolbarPosition()
 
 bool obs_module_load()
 {
-	blog(LOG_INFO, "[StreamUP] loaded version %s", PROJECT_VERSION);
+	StreamUP::DebugLogger::LogInfoFormat("", "Loaded version %s", PROJECT_VERSION);
 
+	StreamUP::DebugLogger::LogDebug("Plugin", "Initialize", "Starting menu initialization");
 	StreamUP::MenuManager::InitializeMenu();
 
+	StreamUP::DebugLogger::LogDebug("Plugin", "Initialize", "Registering WebSocket requests");
 	RegisterWebsocketRequests();
+
+	StreamUP::DebugLogger::LogDebug("Plugin", "Initialize", "Registering hotkeys");
 	StreamUP::HotkeyManager::RegisterHotkeys();
 
+	StreamUP::DebugLogger::LogDebug("Plugin", "Initialize", "Adding save callback for hotkeys");
 	obs_frontend_add_save_callback(StreamUP::HotkeyManager::SaveLoadHotkeys, nullptr);
 
+	StreamUP::DebugLogger::LogDebug("Plugin", "Initialize", "Loading StreamUP dock");
 	LoadStreamUPDock();
+
+	StreamUP::DebugLogger::LogDebug("Plugin", "Initialize", "Loading Scene Organiser docks");
+	LoadSceneOrganiserDocks();
+
+	StreamUP::DebugLogger::LogDebug("Plugin", "Initialize", "Loading StreamUP toolbar");
 	LoadStreamUPToolbar();
 
-	// Initialize MultiDock system
+	StreamUP::DebugLogger::LogDebug("Plugin", "Initialize", "Initializing MultiDock system");
 	StreamUP::MultiDock::MultiDockManager::Initialize();
 
+	StreamUP::DebugLogger::LogInfo("Plugin", "Plugin initialization completed successfully");
 	return true;
 }
 
@@ -688,18 +701,22 @@ static void OnOBSFinishedLoading(enum obs_frontend_event event, void *private_da
 	UNUSED_PARAMETER(private_data);
 	
 	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING) {
-		blog(LOG_INFO, "[StreamUP] OBS finished loading, initializing plugin data...");
-		
+		StreamUP::DebugLogger::LogInfo("Plugin", "OBS finished loading, initializing plugin data...");
+
 		// Remove the event callback since we only need this to run once
+		StreamUP::DebugLogger::LogDebug("Plugin", "OBS Finished Loading", "Removing event callback");
 		obs_frontend_remove_event_callback(OnOBSFinishedLoading, nullptr);
-		
+
 		// Run initialization asynchronously to avoid any potential blocking
+		StreamUP::DebugLogger::LogDebug("Plugin", "OBS Finished Loading", "Starting async initialization thread");
 		std::thread initThread([]() {
 			// Initialize plugin data from API
+			StreamUP::DebugLogger::LogDebug("Plugin", "Async Init", "Initializing required modules");
 			StreamUP::PluginManager::InitialiseRequiredModules();
-			
+
 			// Always perform initial plugin check and cache results for efficiency
 			// This ensures cached data is available even if startup check is disabled
+			StreamUP::DebugLogger::LogDebug("Plugin", "Async Init", "Performing plugin check and cache");
 			StreamUP::PluginManager::PerformPluginCheckAndCache();
 			
 			// Schedule startup UI to show on UI thread with delay
@@ -742,27 +759,43 @@ static void OnOBSFinishedLoading(enum obs_frontend_event event, void *private_da
 
 void obs_module_post_load(void)
 {
+	StreamUP::DebugLogger::LogDebug("Plugin", "Post Load", "Starting post-load initialization");
+
 	// Initialize settings system immediately (this is lightweight)
+	StreamUP::DebugLogger::LogDebug("Plugin", "Post Load", "Initializing settings system");
 	StreamUP::SettingsManager::InitializeSettingsSystem();
-	
+
 	// Register callback to defer heavy initialization until OBS has finished loading
+	StreamUP::DebugLogger::LogDebug("Plugin", "Post Load", "Registering OBS finished loading callback");
 	obs_frontend_add_event_callback(OnOBSFinishedLoading, nullptr);
+
+	StreamUP::DebugLogger::LogDebug("Plugin", "Post Load", "Post-load initialization completed");
 }
 
 //--------------------EXIT COMMANDS--------------------
 void obs_module_unload()
 {
+	StreamUP::DebugLogger::LogDebug("Plugin", "Unload", "Starting plugin unload process");
+
+	StreamUP::DebugLogger::LogDebug("Plugin", "Unload", "Removing save callback for hotkeys");
 	obs_frontend_remove_save_callback(StreamUP::HotkeyManager::SaveLoadHotkeys, nullptr);
+
+	StreamUP::DebugLogger::LogDebug("Plugin", "Unload", "Unregistering hotkeys");
 	StreamUP::HotkeyManager::UnregisterHotkeys();
-	
+
 	// Clean up toolbar - just nullify the pointer, let Qt/OBS handle destruction
+	StreamUP::DebugLogger::LogDebug("Plugin", "Unload", "Cleaning up toolbar reference");
 	globalToolbar = nullptr;
-	
+
 	// Shutdown MultiDock system
+	StreamUP::DebugLogger::LogDebug("Plugin", "Unload", "Shutting down MultiDock system");
 	StreamUP::MultiDock::MultiDockManager::Shutdown();
-	
+
 	// Clean up settings cache
+	StreamUP::DebugLogger::LogDebug("Plugin", "Unload", "Cleaning up settings cache");
 	StreamUP::SettingsManager::CleanupSettingsCache();
+
+	StreamUP::DebugLogger::LogInfo("Plugin", "Plugin unload completed successfully");
 }
 
 MODULE_EXPORT const char *obs_module_description(void)

@@ -47,6 +47,14 @@ enum class ToolbarPosition {
 };
 
 /**
+ * @brief Scene switching click mode options
+ */
+enum class SceneSwitchMode {
+    SingleClick,
+    DoubleClick
+};
+
+/**
  * @brief Settings structure to hold plugin configuration
  */
 struct PluginSettings {
@@ -54,10 +62,13 @@ struct PluginSettings {
     bool notificationsMute;
     bool showCPHIntegration;
     bool showToolbar;
+    bool debugLoggingEnabled;
+    bool sceneOrganiserShowIcons;
+    SceneSwitchMode sceneOrganiserSwitchMode;
     ToolbarPosition toolbarPosition;
     DockToolSettings dockTools;
-    
-    PluginSettings() : runAtStartup(true), notificationsMute(false), showCPHIntegration(true), showToolbar(true), toolbarPosition(ToolbarPosition::Top) {}
+
+    PluginSettings() : runAtStartup(true), notificationsMute(false), showCPHIntegration(true), showToolbar(true), debugLoggingEnabled(false), sceneOrganiserShowIcons(true), sceneOrganiserSwitchMode(SceneSwitchMode::SingleClick), toolbarPosition(ToolbarPosition::Top) {}
 };
 
 /**
@@ -120,6 +131,18 @@ void SetNotificationsMuted(bool muted);
 bool IsCPHIntegrationEnabled();
 
 /**
+ * @brief Check if debug logging is currently enabled
+ * @return bool True if debug logging is enabled
+ */
+bool IsDebugLoggingEnabled();
+
+/**
+ * @brief Set debug logging state
+ * @param enabled True to enable debug logging, false to disable it
+ */
+void SetDebugLoggingEnabled(bool enabled);
+
+/**
  * @brief Show the installed plugins page inline within the same window
  * @param components The dialog components from the template system
  */
@@ -154,6 +177,11 @@ void UpdateDockToolSettings(const DockToolSettings& dockSettings);
  * @param components The dialog components from the template system
  */
 void ShowDockConfigInline(const StreamUP::UIStyles::StandardDialogComponents& components);
+
+/**
+ * Invalidate settings cache (forces reload on next access)
+ */
+void InvalidateSettingsCache();
 
 /**
  * Clean up cached settings on plugin shutdown

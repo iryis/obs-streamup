@@ -1,4 +1,5 @@
 #include "../../core/source-manager.hpp"
+#include "../../utilities/debug-logger.hpp"
 #include "streamup-dock.hpp"
 #include "../../ui_StreamUPDock.h"
 #include "../../flow-layout.hpp"
@@ -107,7 +108,8 @@ void ShowDockConfigDialog()
 		
 		// Get current dock settings
 		StreamUP::SettingsManager::DockToolSettings currentSettings = StreamUP::SettingsManager::GetDockToolSettings();
-		
+		(void)currentSettings; // Suppress unused variable warning
+
 		// Define tool information structure
 		struct ToolInfo {
 			QString name;
@@ -336,7 +338,7 @@ void StreamUPDock::applyFileIconToButton(QPushButton *button, const QString &fil
 	button->setIcon(QIcon(filePath));
 }
 
-StreamUPDock::StreamUPDock(QWidget *parent) : QFrame(parent), ui(new Ui::StreamUPDock), isProcessing(false), videoCapturePopup(nullptr)
+StreamUPDock::StreamUPDock(QWidget *parent) : QFrame(parent), ui(new Ui::StreamUPDock), videoCapturePopup(nullptr), isProcessing(false)
 {
 	ui->setupUi(this);
 
@@ -528,6 +530,9 @@ void StreamUPDock::ButtonShowVideoCapturePopup()
 		videoCapturePopup = nullptr;
 	});
 
+	// Ensure popup icons are themed correctly for current theme
+	videoCapturePopup->updateIconsForTheme();
+
 	// Show popup next to button
 	QPoint buttonPos = videoCaptureButton->mapToGlobal(QPoint(0, 0));
 	videoCapturePopup->showNearButton(buttonPos, videoCaptureButton->size());
@@ -633,7 +638,7 @@ void StreamUPDock::onFrontendEvent(enum obs_frontend_event event, void *private_
 #if LIBOBS_API_VER >= MAKE_SEMANTIC_VERSION(29, 0, 0)
 	else if (event == OBS_FRONTEND_EVENT_THEME_CHANGED) {
 		// Theme changed, update button icons for new theme
-		blog(LOG_INFO, "[StreamUP] Dock received OBS_FRONTEND_EVENT_THEME_CHANGED event");
+		StreamUP::DebugLogger::LogDebug("UI", "Theme", "Dock received OBS_FRONTEND_EVENT_THEME_CHANGED event");
 		dock->updateButtonIcons();
 	}
 #endif

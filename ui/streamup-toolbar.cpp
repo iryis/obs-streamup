@@ -1,10 +1,13 @@
 #include "streamup-toolbar.hpp"
+#include "../utilities/debug-logger.hpp"
 #include "streamup-toolbar-configurator.hpp"
 #include "dock/streamup-dock.hpp"
 #include "../video-capture-popup.hpp"
 #include "ui-styles.hpp"
 #include "ui-helpers.hpp"
 #include "settings-manager.hpp"
+#include "obs-hotkey-manager.hpp"
+#include <obs-module.h>
 #include <QIcon>
 #include <QHBoxLayout>
 #include <QWidget>
@@ -16,37 +19,47 @@
 #include <QContextMenuEvent>
 #include <QMenu>
 #include <QMessageBox>
+#include <QFile>
+#include <QTimer>
 #include <util/config-file.h>
 
-StreamUPToolbar::StreamUPToolbar(QWidget *parent) : QToolBar(parent), 
-	streamButton(nullptr), recordButton(nullptr), pauseButton(nullptr), 
-	replayBufferButton(nullptr), saveReplayButton(nullptr), virtualCameraButton(nullptr), 
+StreamUPToolbar::StreamUPToolbar(QWidget *parent) : QToolBar(parent),
+	streamButton(nullptr), recordButton(nullptr), pauseButton(nullptr),
+	replayBufferButton(nullptr), saveReplayButton(nullptr), virtualCameraButton(nullptr),
 	virtualCameraConfigButton(nullptr), studioModeButton(nullptr), settingsButton(nullptr),
-	streamUPSettingsButton(nullptr), centralWidget(nullptr), mainLayout(nullptr), 
-	contextMenu(nullptr), configureAction(nullptr)
+	streamUPSettingsButton(nullptr), centralWidget(nullptr), mainLayout(nullptr),
+	contextMenu(nullptr), configureAction(nullptr), iconUpdateTimer(nullptr), m_updateBatchTimer(nullptr)
 {
 	setObjectName("StreamUPToolbar");
-	setWindowTitle("StreamUP Controls");
+	setWindowTitle(QString::fromUtf8(obs_module_text("StreamUP.Toolbar.Title")));
+
+	// Initialize optimized update system
+	m_updateBatchTimer = new QTimer(this);
+	m_updateBatchTimer->setSingleShot(true);
+	m_updateBatchTimer->setInterval(50); // 50ms batching delay
+	connect(m_updateBatchTimer, &QTimer::timeout, this, &StreamUPToolbar::processBatchedUpdates);
 
 	// Setup context menu
 	contextMenu = new QMenu(this);
-	configureAction = contextMenu->addAction("Configure Toolbar...");
+	configureAction = contextMenu->addAction(QString::fromUtf8(obs_module_text("StreamUP.Toolbar.Configurator.Title")));
 	connect(configureAction, &QAction::triggered, this, &StreamUPToolbar::onConfigureToolbarClicked);
-	
-	toolbarSettingsAction = contextMenu->addAction("Toolbar Settings");
+
+	toolbarSettingsAction = contextMenu->addAction(QString::fromUtf8(obs_module_text("StreamUP.Settings.ToolbarSettings")));
 	connect(toolbarSettingsAction, &QAction::triggered, this, &StreamUPToolbar::onToolbarSettingsClicked);
 
 	// Load configuration and setup UI
 	toolbarConfig.loadFromSettings();
 	setupDynamicUI();
-	updateAllButtons();
-	
-	// Ensure icons are properly themed on startup
-	updateIconsForTheme();
-	
+
+	// Preload commonly used icons for better performance
+	preloadCommonIcons();
+
+	// Initial update using optimized system
+	scheduleUpdate();
+
 	// Set initial position-aware theming (will be updated when actually added to main window)
 	updatePositionAwareTheme();
-	
+
 	// Register for OBS frontend events to update button states
 	obs_frontend_add_event_callback(OnFrontendEvent, this);
 }
@@ -314,7 +327,7 @@ void StreamUPToolbar::updateStreamButton()
 		streamButton->setChecked(streaming);
 		QString iconName = streaming ? "streaming" : "streaming-inactive";
 		streamButton->setIcon(getCachedIcon(iconName));
-		blog(LOG_DEBUG, "[StreamUP] Updated stream button with cached icon: %s", iconName.toUtf8().constData());
+		StreamUP::DebugLogger::LogDebugFormat("Toolbar", "Update Stream Button", "Updated stream button with cached icon: %s", iconName.toUtf8().constData());
 		streamButton->setToolTip(streaming ? "Stop Streaming" : "Start Streaming");
 	}
 }
@@ -464,14 +477,11 @@ void StreamUPToolbar::updateDockButtonIcons()
 
 void StreamUPToolbar::updateAllButtons()
 {
-	updateStreamButton();
-	updateRecordButton();
-	updatePauseButton();
-	updateReplayBufferButton();
-	updateSaveReplayButton();
-	updateVirtualCameraButton();
+	// Use the new efficient batched update system
+	updateButtonStatesEfficiently();
+
+	// Update non-state dependent buttons individually
 	updateVirtualCameraConfigButton();
-	updateStudioModeButton();
 	updateSettingsButton();
 	updateStreamUPSettingsButton();
 }
@@ -480,43 +490,30 @@ void StreamUPToolbar::OnFrontendEvent(enum obs_frontend_event event, void *data)
 {
 	StreamUPToolbar* toolbar = static_cast<StreamUPToolbar*>(data);
 	if (!toolbar) return;
-	
+
+	// Use optimized batched update system for all state-changing events
 	switch (event) {
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
 	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
-		toolbar->updateStreamButton();
-		break;
-		
 	case OBS_FRONTEND_EVENT_RECORDING_STARTED:
 	case OBS_FRONTEND_EVENT_RECORDING_STOPPED:
 	case OBS_FRONTEND_EVENT_RECORDING_PAUSED:
 	case OBS_FRONTEND_EVENT_RECORDING_UNPAUSED:
-		toolbar->updateRecordButton();
-		toolbar->updatePauseButton();
-		toolbar->updateSaveReplayButton(); // Save replay can be disabled during recording pause
-		break;
-		
 	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED:
 	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED:
-		toolbar->updateReplayBufferButton();
-		toolbar->updateSaveReplayButton();
-		break;
-		
 	case OBS_FRONTEND_EVENT_VIRTUALCAM_STARTED:
 	case OBS_FRONTEND_EVENT_VIRTUALCAM_STOPPED:
-		toolbar->updateVirtualCameraButton();
-		break;
-		
 	case OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED:
 	case OBS_FRONTEND_EVENT_STUDIO_MODE_DISABLED:
-		toolbar->updateStudioModeButton();
+		// Schedule efficient batched update instead of individual updates
+		toolbar->scheduleUpdate();
 		break;
-		
+
 	case OBS_FRONTEND_EVENT_PROFILE_CHANGED:
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
-		// Settings may have changed, update button visibility
+		// Settings may have changed, force immediate update with button visibility
 		toolbar->updateButtonVisibility();
-		toolbar->updateAllButtons();
+		toolbar->scheduleUpdate();
 		break;
 		
 #if LIBOBS_API_VER >= MAKE_SEMANTIC_VERSION(29, 0, 0)
@@ -575,6 +572,109 @@ void StreamUPToolbar::clearStyleSheetCache()
 {
 	cachedStyleSheet.clear();
 	styleSheetCacheValid = false;
+}
+
+void StreamUPToolbar::preloadCommonIcons()
+{
+	// Preload frequently used icons to reduce load time during updates
+	const QStringList commonIcons = {
+		"streaming", "streaming-inactive",
+		"record-on", "record-off",
+		"pause", "save-replay",
+		"replay-buffer-on", "replay-buffer-off",
+		"virtual-camera-on", "virtual-camera-off",
+		"virtual-camera-settings", "settings"
+	};
+
+	for (const QString& iconName : commonIcons) {
+		getCachedIcon(iconName); // This will cache the icon
+	}
+
+	StreamUP::DebugLogger::LogDebugFormat("Toolbar", "Icon Preload", "Preloaded %d common icons", commonIcons.size());
+}
+
+void StreamUPToolbar::scheduleUpdate()
+{
+	if (!m_updatesPending) {
+		m_updatesPending = true;
+		m_updateBatchTimer->start();
+	}
+}
+
+void StreamUPToolbar::processBatchedUpdates()
+{
+	if (!m_updatesPending) {
+		return;
+	}
+
+	m_updatesPending = false;
+	updateButtonStatesEfficiently();
+}
+
+void StreamUPToolbar::updateButtonStatesEfficiently()
+{
+	if (isReconstructingUI) {
+		return;
+	}
+
+	// Batch all state checks to minimize OBS API calls
+	bool streaming = obs_frontend_streaming_active();
+	bool recording = obs_frontend_recording_active();
+	bool paused = obs_frontend_recording_paused();
+	bool replayActive = obs_frontend_replay_buffer_active();
+	bool vcamActive = obs_frontend_virtualcam_active();
+	bool studioMode = obs_frontend_preview_program_mode_active();
+
+	// Update all buttons efficiently with batched state
+	if (streamButton) {
+		streamButton->setChecked(streaming);
+		QString iconName = streaming ? "streaming" : "streaming-inactive";
+		streamButton->setIcon(getCachedIcon(iconName));
+		streamButton->setToolTip(streaming ? "Stop Streaming" : "Start Streaming");
+	}
+
+	if (recordButton) {
+		recordButton->setChecked(recording);
+		QString iconName = recording ? "record-on" : "record-off";
+		recordButton->setIcon(getCachedIcon(iconName));
+		recordButton->setToolTip(recording ? "Stop Recording" : "Start Recording");
+	}
+
+	if (pauseButton) {
+		bool canPause = recording && isRecordingPausable();
+		pauseButton->setVisible(canPause);
+		pauseButton->setEnabled(canPause);
+		pauseButton->setChecked(paused);
+		pauseButton->setIcon(getCachedIcon("pause"));
+		pauseButton->setToolTip(paused ? "Resume Recording" : "Pause Recording");
+	}
+
+	if (replayBufferButton) {
+		replayBufferButton->setChecked(replayActive);
+		QString iconName = replayActive ? "replay-buffer-on" : "replay-buffer-off";
+		replayBufferButton->setIcon(getCachedIcon(iconName));
+		replayBufferButton->setToolTip(replayActive ? "Stop Replay Buffer" : "Start Replay Buffer");
+	}
+
+	if (saveReplayButton) {
+		saveReplayButton->setVisible(replayActive);
+		saveReplayButton->setEnabled(replayActive && !paused);
+		saveReplayButton->setIcon(getCachedIcon("save-replay"));
+	}
+
+	if (virtualCameraButton) {
+		virtualCameraButton->setChecked(vcamActive);
+		QString iconName = vcamActive ? "virtual-camera-on" : "virtual-camera-off";
+		virtualCameraButton->setIcon(getCachedIcon(iconName));
+		virtualCameraButton->setToolTip(vcamActive ? "Stop Virtual Camera" : "Start Virtual Camera");
+	}
+
+	if (studioModeButton) {
+		studioModeButton->setChecked(studioMode);
+		studioModeButton->setToolTip(studioMode ? "Disable Studio Mode" : "Enable Studio Mode");
+	}
+
+	StreamUP::DebugLogger::LogDebug("Toolbar", "Batch Update", "Completed efficient button state update");
 }
 
 void StreamUPToolbar::updateIconsForTheme()
@@ -637,7 +737,7 @@ void StreamUPToolbar::updatePositionAwareTheme()
 	// Get current toolbar position from the main window
 	QMainWindow* mainWindow = qobject_cast<QMainWindow*>(parent());
 	if (!mainWindow) {
-		blog(LOG_WARNING, "[StreamUP] Unable to get main window for position-aware theming");
+		StreamUP::DebugLogger::LogWarning("Toolbar", "Theming: Unable to get main window for position-aware theming");
 		return;
 	}
 	
@@ -748,14 +848,14 @@ void StreamUPToolbar::updatePositionAwareTheme()
 void StreamUPToolbar::updateLayoutOrientation()
 {
 	if (!centralWidget || !mainLayout) {
-		blog(LOG_WARNING, "[StreamUP] Cannot update layout orientation - missing central widget or layout");
+		StreamUP::DebugLogger::LogWarning("Toolbar", "Layout: Cannot update layout orientation - missing central widget or layout");
 		return;
 	}
 	
 	// Get current toolbar position from the main window
 	QMainWindow* mainWindow = qobject_cast<QMainWindow*>(parent());
 	if (!mainWindow) {
-		blog(LOG_WARNING, "[StreamUP] Unable to get main window for layout orientation update");
+		StreamUP::DebugLogger::LogWarning("Toolbar", "Layout: Unable to get main window for layout orientation update");
 		return;
 	}
 	
@@ -1015,8 +1115,11 @@ void StreamUPToolbar::setupDynamicUI()
 	streamUPSettingsButton = nullptr;
 	
 	// Create widgets from configuration in two passes to ensure proper positioning
+	// Get flattened items (ignoring groups since they're just for UI organization)
+	auto flattenedItems = toolbarConfig.getFlattenedItems();
+	
 	// First pass: Add all items that are NOT StreamUP settings buttons
-	for (const auto& item : toolbarConfig.items) {
+	for (const auto& item : flattenedItems) {
 		if (!item->visible) continue;
 		
 		// Skip StreamUP settings buttons in first pass
@@ -1123,7 +1226,7 @@ void StreamUPToolbar::setupDynamicUI()
 	
 	// Add stretch to push StreamUP settings buttons to the right
 	bool hasStreamUPSettings = false;
-	for (const auto& item : toolbarConfig.items) {
+	for (const auto& item : flattenedItems) {
 		if (!item->visible) continue;
 		if (item->type == StreamUP::ToolbarConfig::ItemType::Button) {
 			if (auto buttonItem = std::dynamic_pointer_cast<StreamUP::ToolbarConfig::ButtonItem>(item)) {
@@ -1139,7 +1242,7 @@ void StreamUPToolbar::setupDynamicUI()
 	}
 	
 	// Second pass: Add StreamUP settings buttons (they go on the right)
-	for (const auto& item : toolbarConfig.items) {
+	for (const auto& item : flattenedItems) {
 		if (!item->visible) continue;
 		
 		// Only process StreamUP settings buttons in second pass
@@ -1251,6 +1354,34 @@ QToolButton* StreamUPToolbar::createButtonFromConfig(std::shared_ptr<StreamUP::T
 		// Store dock action type in button's property
 		button->setProperty("dockActionType", dockItem->dockButtonType);
 		connect(button, &QToolButton::clicked, this, &StreamUPToolbar::onDockButtonClicked);
+	} else if (item->type == StreamUP::ToolbarConfig::ItemType::HotkeyButton) {
+		auto hotkeyItem = std::static_pointer_cast<StreamUP::ToolbarConfig::HotkeyButtonItem>(item);
+		
+		// Set up hotkey button
+		if (hotkeyItem->useCustomIcon && !hotkeyItem->customIconPath.isEmpty()) {
+			// Use custom icon
+			button->setIcon(QIcon(hotkeyItem->customIconPath));
+		} else if (!hotkeyItem->iconPath.isEmpty()) {
+			// Check if iconPath is a full file path (from OBS icons) or just a name (from StreamUP icons)
+			if (QFile::exists(hotkeyItem->iconPath)) {
+				// Full file path - use directly
+				button->setIcon(QIcon(hotkeyItem->iconPath));
+			} else {
+				// Icon name - use themed icon system
+				button->setIcon(getCachedIcon(hotkeyItem->iconPath));
+			}
+		} else {
+			// Use default icon for this hotkey
+			QString defaultIcon = StreamUP::OBSHotkeyManager::getDefaultHotkeyIcon(hotkeyItem->hotkeyName);
+			button->setIcon(getCachedIcon(defaultIcon));
+		}
+		
+		button->setToolTip(hotkeyItem->tooltip.isEmpty() ? hotkeyItem->displayName : hotkeyItem->tooltip);
+		button->setCheckable(false); // Hotkey buttons are typically not checkable
+		
+		// Store hotkey name in button's property
+		button->setProperty("hotkeyName", hotkeyItem->hotkeyName);
+		connect(button, &QToolButton::clicked, this, &StreamUPToolbar::onHotkeyButtonClicked);
 	}
 	
 	return button;
@@ -1348,6 +1479,24 @@ void StreamUPToolbar::onDockButtonClicked()
 	}
 }
 
+void StreamUPToolbar::onHotkeyButtonClicked()
+{
+	QToolButton* button = qobject_cast<QToolButton*>(sender());
+	if (!button) return;
+	
+	QString hotkeyName = button->property("hotkeyName").toString();
+	if (hotkeyName.isEmpty()) {
+		qWarning() << "[StreamUP] Hotkey button has no associated hotkey name";
+		return;
+	}
+	
+	// Trigger the OBS hotkey
+	bool success = StreamUP::OBSHotkeyManager::triggerHotkey(hotkeyName);
+	if (!success) {
+		qWarning() << "[StreamUP] Failed to trigger hotkey:" << hotkeyName;
+	}
+}
+
 
 void StreamUPToolbar::executeDockAction(const QString& actionType)
 {
@@ -1357,8 +1506,8 @@ void StreamUPToolbar::executeDockAction(const QString& actionType)
 	
 	StreamUPDock* dock = mainWindow->findChild<StreamUPDock*>();
 	if (!dock) {
-		QMessageBox::warning(this, "StreamUP Dock", 
-			"StreamUP dock is not available. Please make sure it is loaded.");
+		QMessageBox::warning(this, QString::fromUtf8(obs_module_text("Dock.Title")),
+			QString::fromUtf8(obs_module_text("StreamUP.Toolbar.DockNotAvailable")));
 		return;
 	}
 	
@@ -1387,7 +1536,7 @@ void StreamUPToolbar::executeDockAction(const QString& actionType)
 		// Open StreamUP settings dialog
 		ShowDockConfigDialog();
 	} else {
-		QMessageBox::warning(this, "Unknown Action", 
+		QMessageBox::warning(this, QString::fromUtf8(obs_module_text("StreamUP.Toolbar.UnknownAction")),
 			QString("Unknown dock action: %1").arg(actionType));
 	}
 }
@@ -1400,8 +1549,8 @@ void StreamUPToolbar::executeDockActionWithButton(const QString& actionType, QTo
 	
 	StreamUPDock* dock = mainWindow->findChild<StreamUPDock*>();
 	if (!dock) {
-		QMessageBox::warning(this, "StreamUP Dock", 
-			"StreamUP dock is not available. Please make sure it is loaded.");
+		QMessageBox::warning(this, QString::fromUtf8(obs_module_text("Dock.Title")),
+			QString::fromUtf8(obs_module_text("StreamUP.Toolbar.DockNotAvailable")));
 		return;
 	}
 	
@@ -1436,6 +1585,9 @@ void StreamUPToolbar::executeDockActionWithButton(const QString& actionType, QTo
 		connect(videoCapturePopup, &QWidget::destroyed, [&]() {
 			videoCapturePopup = nullptr;
 		});
+		
+		// Ensure popup icons are themed correctly for current theme
+		videoCapturePopup->updateIconsForTheme();
 		
 		// Show popup next to the toolbar button (not dock button)
 		QPoint buttonPos = button->mapToGlobal(QPoint(0, 0));

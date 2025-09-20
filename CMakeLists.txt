@@ -57,7 +57,9 @@ target_sources(${PROJECT_NAME} PRIVATE
   utilities/error-handler.hpp
   utilities/error-handler.cpp
   utilities/obs-data-helpers.hpp
-  utilities/obs-data-helpers.cpp)
+  utilities/obs-data-helpers.cpp
+  utilities/debug-logger.hpp
+  utilities/debug-logger.cpp)
 
 # UI module files
 target_sources(${PROJECT_NAME} PRIVATE
@@ -87,12 +89,22 @@ target_sources(${PROJECT_NAME} PRIVATE
   ui/websocket-window.cpp
   ui/dock/streamup-dock.hpp
   ui/dock/streamup-dock.cpp
+  ui/scene-organiser/scene-organiser-dock.hpp
+  ui/scene-organiser/scene-organiser-dock.cpp
   ui/streamup-toolbar.hpp
   ui/streamup-toolbar.cpp
   ui/streamup-toolbar-config.hpp
   ui/streamup-toolbar-config.cpp
   ui/streamup-toolbar-configurator.hpp
-  ui/streamup-toolbar-configurator.cpp)
+  ui/streamup-toolbar-configurator.cpp
+  ui/obs-hotkey-manager.hpp
+  ui/obs-hotkey-manager.cpp
+  ui/icon-selector-dialog.hpp
+  ui/icon-selector-dialog.cpp
+  ui/hotkey-selector-dialog.hpp
+  ui/hotkey-selector-dialog.cpp
+  ui/hotkey-button-config-dialog.hpp
+  ui/hotkey-button-config-dialog.cpp)
 
 # Integrations module files
 target_sources(${PROJECT_NAME} PRIVATE
@@ -154,7 +166,9 @@ source_group("Utilities" FILES
   utilities/error-handler.hpp
   utilities/error-handler.cpp
   utilities/obs-data-helpers.hpp
-  utilities/obs-data-helpers.cpp)
+  utilities/obs-data-helpers.cpp
+  utilities/debug-logger.hpp
+  utilities/debug-logger.cpp)
 
 source_group("UI" FILES
   ui/hotkey-manager.hpp
@@ -184,13 +198,25 @@ source_group("UI\\Dock" FILES
   ui/dock/streamup-dock.hpp
   ui/dock/streamup-dock.cpp)
 
+source_group("UI\\Scene Organiser" FILES
+  ui/scene-organiser/scene-organiser-dock.hpp
+  ui/scene-organiser/scene-organiser-dock.cpp)
+
 source_group("UI\\Toolbar" FILES
   ui/streamup-toolbar.hpp
   ui/streamup-toolbar.cpp
   ui/streamup-toolbar-config.hpp
   ui/streamup-toolbar-config.cpp
   ui/streamup-toolbar-configurator.hpp
-  ui/streamup-toolbar-configurator.cpp)
+  ui/streamup-toolbar-configurator.cpp
+  ui/obs-hotkey-manager.hpp
+  ui/obs-hotkey-manager.cpp
+  ui/icon-selector-dialog.hpp
+  ui/icon-selector-dialog.cpp
+  ui/hotkey-selector-dialog.hpp
+  ui/hotkey-selector-dialog.cpp
+  ui/hotkey-button-config-dialog.hpp
+  ui/hotkey-button-config-dialog.cpp)
 
 source_group("Integrations" FILES
   integrations/websocket-api.hpp

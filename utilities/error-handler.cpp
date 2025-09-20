@@ -1,4 +1,5 @@
 #include "error-handler.hpp"
+#include "../ui/settings-manager.hpp"
 #include "ui-helpers.hpp"
 #include "ui-styles.hpp"
 #include <obs-module.h>
@@ -59,7 +60,10 @@ void Log(Severity severity, Category category, const std::string& message) {
 }
 
 void LogInfo(const std::string& message, Category category) {
-    Log(Severity::Info, category, message);
+    // Only log info messages when debug logging is enabled
+    if (StreamUP::SettingsManager::IsDebugLoggingEnabled()) {
+        Log(Severity::Info, category, message);
+    }
 }
 
 void LogWarning(const std::string& message, Category category) {
@@ -139,7 +143,7 @@ void ShowErrorDialog(const std::string& title, const std::string& message) {
         QHBoxLayout* buttonLayout = new QHBoxLayout();
         buttonLayout->addStretch();
         
-        QPushButton* okButton = StreamUP::UIStyles::CreateStyledButton("OK", "neutral");
+        QPushButton* okButton = StreamUP::UIStyles::CreateStyledButton(obs_module_text("OK"), "neutral");
         QObject::connect(okButton, &QPushButton::clicked, [dialog]() { dialog->close(); });
         buttonLayout->addWidget(okButton);
         buttonLayout->addStretch();
@@ -183,7 +187,7 @@ void ShowWarningDialog(const std::string& title, const std::string& message) {
         QHBoxLayout* buttonLayout = new QHBoxLayout();
         buttonLayout->addStretch();
         
-        QPushButton* okButton = StreamUP::UIStyles::CreateStyledButton("OK", "warning");
+        QPushButton* okButton = StreamUP::UIStyles::CreateStyledButton(obs_module_text("OK"), "warning");
         QObject::connect(okButton, &QPushButton::clicked, [dialog]() { dialog->close(); });
         buttonLayout->addWidget(okButton);
         buttonLayout->addStretch();
@@ -226,7 +230,7 @@ void ShowInfoDialog(const std::string& title, const std::string& message) {
         QHBoxLayout* buttonLayout = new QHBoxLayout();
         buttonLayout->addStretch();
         
-        QPushButton* okButton = StreamUP::UIStyles::CreateStyledButton("OK", "info");
+        QPushButton* okButton = StreamUP::UIStyles::CreateStyledButton(obs_module_text("OK"), "info");
         QObject::connect(okButton, &QPushButton::clicked, [dialog]() { dialog->close(); });
         buttonLayout->addWidget(okButton);
         buttonLayout->addStretch();
