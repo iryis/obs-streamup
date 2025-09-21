@@ -34,8 +34,6 @@ jobs:
         run: echo "add_subdirectory(${{ env.PLUGIN_NAME }})" >> UI/frontend-plugins/CMakeLists.txt
       - name: Fetch Git Tags
         run: git fetch --prune --tags --unshallow
-      - name: 'Install dependencies'
-        run: CI/linux/01_install_dependencies.sh --disable-pipewire
       - name: 'Configure'
         shell: bash
         run: |
