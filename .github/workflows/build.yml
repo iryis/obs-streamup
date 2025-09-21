@@ -8,7 +8,7 @@ on:
 
 env:
   PLUGIN_NAME: streamup
-  OBS_VERSION: 32.0.0-rc1
+  OBS_VERSION: master
 
 jobs:
   linux-in-tree:
